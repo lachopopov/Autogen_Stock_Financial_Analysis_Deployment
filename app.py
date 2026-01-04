@@ -22,9 +22,42 @@ class StockAnalysisApp:
         self.config = AppConfig()
         self.agents = Agents()
 
+    @staticmethod
+    def _apply_streamlit_secrets_to_env() -> None:
+        """Copies Streamlit Secrets into env vars (when missing).
+
+        Streamlit Community Cloud stores secrets in a TOML blob. The rest of this app
+        expects config via `os.environ`, so we bridge secrets -> env here.
+        """
+        try:
+            secrets = getattr(st, "secrets", None)
+            if not secrets:
+                return
+        except Exception:
+            return
+
+        for key in (
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_MODEL",
+            "AG2_ROUTING_MODE",
+            "AG2_MANAGER_LLM",
+            "AG2_INCLUDE_MANAGER_USAGE",
+        ):
+            try:
+                if os.environ.get(key):
+                    continue
+                if key in secrets and secrets.get(key) is not None:
+                    os.environ[key] = str(secrets.get(key))
+            except Exception:
+                continue
+
     def render_sidebar(self):
         with st.sidebar:
             st.header("🔧 Configuration")
+
+            # Ensure Streamlit Cloud secrets (TOML) are available through env vars.
+            self._apply_streamlit_secrets_to_env()
 
             selected_model = st.selectbox(
                 "Model",
@@ -43,14 +76,24 @@ class StockAnalysisApp:
             if single_agent_mode:
                 st.info("Single-agent mode enabled")
 
-            api_key = st.text_input(
-                "OpenAI API Key",
-                type="password",
-                value=os.environ.get("OPENAI_API_KEY", ""),
-                help="Enter your OpenAI API key"
+            has_configured_key = bool(os.environ.get("OPENAI_API_KEY"))
+            use_own_key = st.checkbox(
+                "Use my own OpenAI API key",
+                value=False,
+                help="Enable this only if you want to override the configured key.",
             )
-            if api_key:
-                os.environ["OPENAI_API_KEY"] = api_key
+
+            if not use_own_key and has_configured_key:
+                st.caption("OpenAI API key is configured (hidden).")
+            else:
+                api_key = st.text_input(
+                    "OpenAI API Key",
+                    type="password",
+                    value="",
+                    help="Enter your OpenAI API key",
+                )
+                if api_key:
+                    os.environ["OPENAI_API_KEY"] = api_key
 
             st.divider()
             st.header("📊 Quick Stock Info")
