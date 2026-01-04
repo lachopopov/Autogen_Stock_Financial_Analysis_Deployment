@@ -15,24 +15,25 @@ class FinanceTools:
             period: Historical period (e.g., '1mo').
         
         Returns:
-            JSON string with data or error.
-        """
-        if not ticker or not isinstance(ticker, str):
-            return json.dumps({"error": "Invalid ticker provided."})
+            JSON string with data or error."""
+    
         try:
             stock = yf.Ticker(ticker)
-            hist = stock.history(period=period)
-            if hist.empty:
-                return json.dumps({"error": f"No historical data for {ticker}."})
-            converted_hist = {key: {str(k): v for k, v in value.items()} for key, value in hist.to_dict().items()}
+            hist = stock.history(period=period).to_dict()
+            converted_hist = {key: {str(k): v for k, v in value.items()} for key, value in hist.items()}
             info = stock.info
+
+            # Keep tool payloads small to reduce token usage in agent chats.
+            raw_summary = str(info.get("longBusinessSummary", "") or "").strip()
+            if len(raw_summary) > 600:
+                raw_summary = raw_summary[:600].rstrip() + "..."
             
             summary = {
                 "name": info.get("shortName", ticker),
                 "symbol": ticker,
                 "currentPrice": info.get("currentPrice"),
                 "currency": info.get("currency", "USD"),
-                "summary": info.get("longBusinessSummary", ""),
+                "summary": raw_summary,
                 "marketCap": info.get("marketCap"),
                 "peRatio": info.get("trailingPE"),
                 "priceToBook": info.get("priceToBook"),
@@ -41,7 +42,8 @@ class FinanceTools:
             }
             return json.dumps({"name": "finance_data_fetch", "data": summary})
         except Exception as e:
-            return json.dumps({"error": f"Failed to fetch data for {ticker}: {str(e)}"})
+            return json.dumps({"error": f"Failed to fetch data for {ticker}: {str(e)}"})    
+        
 
     @staticmethod
     def technical_analysis_tool(ticker: str) -> str:
@@ -118,10 +120,10 @@ class FinanceTools:
         """
         if not ticker or not isinstance(ticker, str):
             return json.dumps({"error": "Invalid ticker provided."})
+        
+    
         try:
             data = yf.Ticker(ticker).history(period="6mo", interval="1d")
-            if data.empty:
-                return json.dumps({"error": f"No data for strategy signals on {ticker}."})
             close = data['Close']
             ema12 = close.ewm(span=12, adjust=False).mean()
             ema26 = close.ewm(span=26, adjust=False).mean()
@@ -134,14 +136,16 @@ class FinanceTools:
             rsi = 100 - (100 / (1 + rs))
 
             summary = {
-                "MACD": macd.dropna().iloc[-1] if not macd.dropna().empty else None,
-                "MACD_Signal": signal.dropna().iloc[-1] if not signal.dropna().empty else None,
-                "RSI": rsi.dropna().iloc[-1] if not rsi.dropna().empty else None,
+                "MACD": macd.dropna().iloc[-1],
+                "MACD_Signal": signal.dropna().iloc[-1],
+                "RSI": rsi.dropna().iloc[-1],
                 "Last_Close": close.iloc[-1]
             }
             return json.dumps({"name": "strategy_signal_tool", "data": summary})
         except Exception as e:
             return json.dumps({"error": f"Strategy signal analysis failed for {ticker}: {str(e)}"})
+        
+        
 
     @staticmethod
     def get_stock_metrics(ticker: str) -> str:

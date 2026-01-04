@@ -23,7 +23,7 @@ class AppConfig:
                 -webkit-text-fill-color: unset;
             }
             .stButton > button {
-                width: 30%;
+                width: 100%; /* was 30%: makes it look correct inside the right-hand column */
                 background: #1f2a44;
                 color: white;
                 border: none;

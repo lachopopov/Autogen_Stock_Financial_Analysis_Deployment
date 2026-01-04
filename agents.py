@@ -1,196 +1,350 @@
 import streamlit as st  # For error display in the streamlit app.
-import tempfile  # For temporary directories in code execution.
-from autogen import AssistantAgent, UserProxyAgent, register_for_llm  # Imports for AG2 agents and tool registration.
-import os  # For environment variable access.
-from agent_config import AgentConfig  # Imports config utilities.
+from autogen.agentchat import AssistantAgent, UserProxyAgent, register_function
+import os
+import json
+import re
+from agent_config import AgentConfig
+from tools import FinanceTools  # Imports the financial tools.
 
 class Agents:
     """Manages AutoGen agents and their interactions for the stock analysis app."""
     
     def __init__(self):
-        # Initializes the agent configuration with LLM settings and code executor.
-        # Sets up the config list for all agents, using GPT-4 model and environment variables for API access.
-        self.config_list = [
-            {
-                "model": "gpt-4",  # Valid OpenAI model for LLM interactions.
-                "api_key": os.environ.get("OPENAI_API_KEY"),  # Secure API key retrieval.
-                "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),  # Default or custom OpenAI endpoint.
-            }
-        ]
+        # Initializes the agent configuration with code executor.
+        # LLM model/temperature selection is centralized in AgentConfig.
         # Initializes code executor config for safe code execution by agents.
         self.code_executor_config, self.temp_dir = AgentConfig.get_code_executor_config()
 
     def initialize_agents(self):
-        # Main method to create and configure all agents for the stock analysis workflow.
-        # Returns a tuple of agents: finance_reporting_analyst, technical_analyst, strategy_agent, user (supervisor), assistant_agent, user_proxy.
-        # Handles exceptions by displaying errors in streamlit and returning None values.
+        """
+        Multi-agent (GroupChat) initialization.
+
+        IMPORTANT CONTRACT:
+        - Returns exactly 4 agents in this order:
+          (finance_reporting_analyst, technical_analyst, strategy_agent, supervisor_user)
+        - This matches agent_orchestrator.orchestrate_agents(...).
+        """
         try:
-            # Creates the finance reporting analyst agent for fundamental stock analysis and reporting.
-            # This agent focuses on data fetching and comprehensive reports, using only the finance_data_fetch tool.
-            finance_reporting_analyst = AssistantAgent(
-                name="finance_reporting_analyst",  # Unique identifier for the agent.
-                system_message="""
-                    You are a Finance Reporting Analyst. You have to analyze the stock data for the given ticker 
-                    Perform the Stock as per the user request and create a comprehensive report in markdown format.
-                    To extract the data, use the tools provided.
-
-                    Constraints:
-                    - Think step by step.
-                    - Use only the available tools.
-                    - Do not invent data. Reflect if unsure.
-                    - Provide actionable insights and recommendations.
-                    - Include key financial metrics and ratios.
-                    """,  # Detailed prompt for the agent's role and constraints.
-                human_input_mode="NEVER",  # Agent responds automatically without human input.
-                llm_config={
-                    "config_list": self.config_list,  # Uses shared LLM config.
-                    "timeout": 280,  # Timeout for LLM responses.
-                    "temperature": 0.5,  # Balanced creativity for analysis.
-                },
-            )
-
-            # Registers the finance_data_fetch tool specifically for this agent.
-            # This allows the agent to call the tool during conversations for data retrieval.
-            register_for_llm(
-                FinanceTools.finance_data_fetch,  # The tool function to register.
-                caller=finance_reporting_analyst,  # The agent that can call the tool.
-                executor=user  # The user proxy that executes the tool (defined later).
-            )
-
-            # Creates the technical analyst agent for indicator-based trend analysis.
-            # This agent analyzes SMA, EMA, RSI, and close prices, providing insights without summaries.
-            technical_analyst = AssistantAgent(
-                name="technical_analyst",  # Unique identifier.
-                system_message="""
-                    You are a Technical Analyst specializing in identifying stock trends using technical indicators.
-                    Use only the tools provided to analyze data using the following indicators:
-                        - Simple Moving Average (SMA)
-                        - Exponential Moving Average (EMA)
-                        - Relative Strength Index (RSI)
-                        - Last Close Price
-
-                    Focus on identifying trends, patterns, and signals (e.g., crossovers, momentum shifts, overbought/oversold conditions).
-                    Provide concise insights and interpretations for each indicator.
-                    Do not include any summaries, financial reports, or performance overviews—these are handled by a separate reporting agent.
-                    Avoid responding to any human input directly.
-                    """,  # Prompt defining technical analysis focus.
-                human_input_mode="NEVER",  # Automatic responses.
-                llm_config={
-                    "config_list": self.config_list,  # Shared config.
-                    "timeout": 200,  # Shorter timeout for technical data.
-                    "temperature": 0.5,  # Consistent analysis.
-                },
-            )
-
-            # Registers the technical_analysis_tool for this agent.
-            register_for_llm(
-                FinanceTools.technical_analysis_tool,
-                caller=technical_analyst,
-                executor=user
-            )
-
-            # Creates the strategy agent for buy/sell recommendations and risk assessment.
-            # This agent evaluates signals (MACD, RSI) and risks (beta, volatility), providing recommendations.
-            strategy_agent = AssistantAgent(
-                name="strategy_agent",  # Unique identifier.
-                system_message="""
-                    You are a Strategy Analyst responsible for recommending Buy/Sell actions while also evaluating the risk profile of a stock.
-
-                    Your responsibilities include:
-                    - Analyzing trading signals:
-                        • MACD and its signal line (for momentum)
-                        • RSI (for overbought/oversold signals)
-                        • Last Close Price
-                    - Assessing risk indicators:
-                        • Volatility (e.g., 52-week change)
-                        • Beta (systematic market risk)
-                        • Dividend Yield and Stability (consistency)
-
-                    Recommendation Logic:
-                    - If MACD > Signal and RSI < 70, consider "Buy" (bullish signal).
-                    - If MACD < Signal or RSI > 70, consider "Sell" (bearish/overbought).
-                    - If RSI is near 50 or indicators conflict, consider "Hold".
-                    - Cross-check recommendation against risk metrics:
-                        • Flag "High Risk" if Beta > 1.2 or high Volatility
-                        • Mention "Stable" if Beta < 0.9 and steady dividends
-
-                    Your response must:
-                    - Include a Buy/Sell/Hold recommendation.
-                    - Clearly state 2-3 sentence rationale using both signals and risk metrics.
-                    - Optionally suggest caution if risk is high despite positive signals.
-
-                    Do NOT perform raw calculations. Use only the tools provided.
-                    Do NOT summarize financial performance or market news.
-                    Do NOT respond to user inputs.
-                    """,  # Prompt for strategy and risk logic.
-                human_input_mode="NEVER",  # Automatic.
-                llm_config={
-                    "config_list": self.config_list,  # Shared config.
-                    "timeout": 300,  # Longer timeout for complex recommendations.
-                    "temperature": 0.5,  # Balanced for decision-making.
-                },
-            )
-
-            # Registers risk_assessment_tool and strategy_signal_tool for this agent.
-            register_for_llm(
-                FinanceTools.risk_assessment_tool,
-                caller=strategy_agent,
-                executor=user
-            )
-            register_for_llm(
-                FinanceTools.strategy_signal_tool,
-                caller=strategy_agent,
-                executor=user
-            )
-
-            # Creates the supervisor user proxy agent to orchestrate the workflow.
-            # This agent manages the conversation flow between user and other agents, ensuring the analysis sequence.
+            # Create the supervisor FIRST so it can be used as the executor in register_function(...).
             user = UserProxyAgent(
-                name="supervisor",  # Identifier as coordinator.
+                name="supervisor",
                 system_message="""
-                    You are the coordinator agent responsible for managing and orchestrating the financial analysis workflow between the user and the following agents:
+You coordinate a 3-agent stock analysis workflow:
 
-                    
-                    1. finance_reporting_analyst - Creates high-level reports.
-                    2. technical_analyst - Performs technical indicator analysis.
-                    3. strategy_agent - Recommends Buy/Sell/Hold based on trading signals and risk assessment.
+1) finance_reporting_analyst: fundamentals + short markdown report
+2) technical_analyst: SMA/EMA/RSI interpretation (no fundamentals)
+3) strategy_agent: Buy/Sell/Hold + risk note using tools
 
-                    ### Workflow:
-                    1. Start with `finance_reporting_analyst` to get stock data and initial analysis report.
-                    2. Pass the output to:
-                        - `finance_reporting_analyst` for adding fundamental points to above report
-                        - `technical_analyst` for adding indicator-based insights to above report
-                    3. After both are done, call `strategy_agent` using the combined data.
-                    4. Present a final, consolidated summary to the user.
-
-                    ### Rules:
-                    - Do not invent information.
-                    - Use only available tools and agent responses.
-                    - Complete the full flow before presenting output.
-                    - If any agent fails, return a helpful explanation and gracefully handle the failure.
-                    """,  # Workflow instructions for orchestration.
+Rules:
+- Use only tool outputs; do not invent data.
+- NEVER paste raw tool JSON into responses; summarize it.
+- Keep responses short (<= 12 bullet lines unless user asks for more).
+""",  # Workflow instructions for orchestration.
                 human_input_mode="NEVER",  # Handles orchestration automatically.
-                max_consecutive_auto_reply=3,  # Limits auto-replies to prevent loops.
+                max_consecutive_auto_reply=10,  # Limits auto-replies to prevent loops.
                 code_execution_config={"executor": self.code_executor_config},  # Enables code execution.
             )
 
-            # Creates the assistant agent as a graceful fallback for single-agent mode.
-            # This agent has all tools registered for comprehensive, direct analysis when multi-agent is not needed.
-            assistant_agent = AgentConfig.get_assistant_agent()
+            finance_reporting_analyst = AssistantAgent(
+                name="finance_reporting_analyst",  # Unique identifier for the agent.
+                system_message="""
+Role: Finance Reporting Analyst.
+Use ONLY available tools. Write concise markdown: key metrics + brief insights.
+NEVER paste raw tool JSON; summarize.
+Do not invent data. If unsure, say so.
 
-            # Creates the user proxy for direct interaction in single-agent mode.
-            # This allows human input for chat with the assistant_agent.
-            user_proxy = UserProxyAgent(
-                name="User",  # Identifier for user interactions.
-                human_input_mode="ALWAYS",  # Requires human input for responses.
-                code_execution_config=AgentConfig.get_code_executor_config()[0]  # Code execution setup.
+Scope:
+- Fundamentals/valuation only (P/E, P/B, market cap, dividend, business summary).
+- Do NOT include technical indicators (SMA/EMA/RSI/MACD) and do NOT give trading triggers.
+
+IMPORTANT:
+- Call finance_data_fetch at most once (default period) unless the user explicitly requests a different period.
+""",  # Detailed prompt for the agent's role and constraints.
+                human_input_mode="NEVER",  # Agent responds automatically without human input.
+                llm_config=AgentConfig.get_llm_runtime_config(timeout=280),
             )
 
-            # Returns all initialized agents for use in the app.
-            return finance_reporting_analyst, technical_analyst, strategy_agent, user, assistant_agent, user_proxy
-        
+            technical_analyst = AssistantAgent(
+                name="technical_analyst",  # Unique identifier.
+                system_message="""
+Role: Technical Analyst.
+Use ONLY available tools. Explain SMA_20/EMA_20/RSI/Last_Close briefly.
+NEVER paste raw tool JSON; summarize.
+No fundamentals, no long report, no user interaction.
+
+Do not mention trading volume unless you have a tool-provided volume metric.
+""",  # Prompt defining technical analysis focus.
+                human_input_mode="NEVER",  # Automatic responses.
+                llm_config=AgentConfig.get_llm_runtime_config(timeout=200),
+            )
+
+            strategy_agent = AssistantAgent(
+                name="strategy_agent",  # Unique identifier.
+                system_message="""
+Role: Strategy Analyst.
+Use ONLY available tools. Output: Buy/Sell/Hold + 2-3 sentence rationale using signals + risk metrics.
+NEVER paste raw tool JSON; summarize.
+If risk is high, explicitly flag it.
+
+Do not mention trading volume unless you have a tool-provided volume metric.
+""",  # Prompt for strategy and risk logic.
+                human_input_mode="NEVER",  # Automatic.
+                llm_config=AgentConfig.get_llm_runtime_config(timeout=300),
+            )
+
+            # Register tools AFTER caller + executor exist.
+            register_function(
+                f=FinanceTools.finance_data_fetch,
+                caller=finance_reporting_analyst,
+                executor=user,
+                name="finance_data_fetch",
+                description="Fetch recent stock information for a ticker symbol",
+            )
+            register_function(
+                f=FinanceTools.technical_analysis_tool,
+                caller=technical_analyst,
+                executor=user,
+                name="technical_analysis_tool",
+                description="Perform technical analysis using moving averages and RSI",
+            )
+            register_function(
+                f=FinanceTools.risk_assessment_tool,
+                caller=strategy_agent,
+                executor=user,
+                name="risk_assessment_tool",
+                description="Perform risk evaluation using beta, volatility, and dividend yield",
+            )
+            register_function(
+                f=FinanceTools.strategy_signal_tool,
+                caller=strategy_agent,
+                executor=user,
+                name="strategy_signal_tool",
+                description="Evaluate trading signals using MACD, RSI, and closing price",
+            )
+
+            # IMPORTANT: return ONLY what app.py/orchestrator expects (4 agents).
+            return finance_reporting_analyst, technical_analyst, strategy_agent, user
+
         except Exception as e:
             # Displays any initialization errors in the streamlit app.
             st.error(f"Error initializing agents: {e}")
-            # Returns None for all agents on failure.
-            return None, None, None, None, None, None
+            return None, None, None, None
+
+    def initialize_single_agent(self):
+        """
+        Single-agent initialization.
+
+        Returns:
+            (assistant, executor_user)
+        """
+        try:
+            def _is_termination_msg(msg):
+                # Robust: some adapters add whitespace or extra tokens around TERMINATE.
+                try:
+                    content = (msg or {}).get("content")
+                    if content is None:
+                        return False
+                    return "TERMINATE" in str(content).upper()
+                except Exception:
+                    return False
+
+            executor_user = UserProxyAgent(
+                name="single_agent_executor",
+                system_message="You execute tools for the assistant.",
+                # Never ask a human; use auto-replies. We'll auto-terminate via default_auto_reply + is_termination_msg.
+                human_input_mode="NEVER",
+                # Hard cap: keep single-agent runs predictable and low-cost.
+                # Needs to be >= number of tool executions in the bounded flow.
+                max_consecutive_auto_reply=10,
+                is_termination_msg=_is_termination_msg,
+                code_execution_config={"executor": self.code_executor_config},
+            )
+
+            # Critical: prevent empty auto-replies that trigger redundant assistant turns.
+            # When the agent is done, the executor will send TERMINATE.
+            executor_user.default_auto_reply = "TERMINATE"
+
+            assistant = AgentConfig.get_assistant_agent(executor=executor_user)
+            return assistant, executor_user
+        except Exception as e:
+            st.error(f"Error initializing single-agent mode: {e}")
+            return None, None
+
+    def run_single_agent(self, user_request: str) -> dict:
+        """Runs single-agent mode and returns {result, usage} for the Streamlit UI."""
+        assistant, executor_user = self.initialize_single_agent()
+        if not assistant or not executor_user:
+            return {
+                "result": "Single-agent initialization failed. Check Streamlit error output above.",
+                "usage": None,
+            }
+
+        def _normalize_usage(obj):
+            if obj is None:
+                return None
+            try:
+                return json.loads(json.dumps(obj, default=str))
+            except Exception:
+                return None
+
+        def _round_usage_summary(summary: dict | None) -> dict | None:
+            if not isinstance(summary, dict):
+                return summary
+            try:
+                if "total_cost" in summary:
+                    summary["total_cost"] = round(_to_float(summary.get("total_cost")), 10)
+                for k, v in list(summary.items()):
+                    if k == "total_cost":
+                        continue
+                    if isinstance(v, dict) and "cost" in v:
+                        v["cost"] = round(_to_float(v.get("cost")), 10)
+                return summary
+            except Exception:
+                return summary
+
+        def _agent_client_usage(agent_obj):
+            """Best-effort per-agent usage from the underlying OpenAIWrapper client."""
+            try:
+                client = (
+                    getattr(agent_obj, "client", None)
+                    or getattr(agent_obj, "_client", None)
+                    or getattr(agent_obj, "oai_client", None)
+                    or getattr(agent_obj, "_oai_client", None)
+                )
+                if client is None:
+                    return None
+                summary = getattr(client, "total_usage_summary", None)
+                if summary is None:
+                    return None
+                normalized = _normalize_usage(summary)
+                return _round_usage_summary(normalized)
+            except Exception:
+                return None
+
+        def _to_float(v):
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+
+        def _to_int(v):
+            try:
+                return int(v)
+            except Exception:
+                return 0
+
+        def _aggregate_usage(by_agent: dict) -> dict:
+            totals = {
+                "total_cost": 0.0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            }
+            by_model: dict[str, dict] = {}
+
+            if not isinstance(by_agent, dict):
+                return {"totals": totals, "by_model": by_model}
+
+            for _agent_name, agent_usage in by_agent.items():
+                if not isinstance(agent_usage, dict):
+                    continue
+
+                totals["total_cost"] += _to_float(agent_usage.get("total_cost"))
+
+                for k, v in agent_usage.items():
+                    if k == "total_cost":
+                        continue
+                    if not isinstance(v, dict):
+                        continue
+
+                    model_bucket = by_model.setdefault(
+                        k,
+                        {"cost": 0.0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    )
+                    model_bucket["cost"] += _to_float(v.get("cost"))
+                    model_bucket["prompt_tokens"] += _to_int(v.get("prompt_tokens"))
+                    model_bucket["completion_tokens"] += _to_int(v.get("completion_tokens"))
+                    model_bucket["total_tokens"] += _to_int(v.get("total_tokens"))
+
+                    totals["prompt_tokens"] += _to_int(v.get("prompt_tokens"))
+                    totals["completion_tokens"] += _to_int(v.get("completion_tokens"))
+                    totals["total_tokens"] += _to_int(v.get("total_tokens"))
+
+            # Clean up float artifacts for display/storage.
+            totals["total_cost"] = round(_to_float(totals.get("total_cost")), 10)
+            for _model_name, bucket in by_model.items():
+                if isinstance(bucket, dict):
+                    bucket["cost"] = round(_to_float(bucket.get("cost")), 10)
+
+            return {"totals": totals, "by_model": by_model}
+
+        def _build_single_agent_message(raw: str) -> str:
+            s = (raw or "").strip()
+            # If the user enters only a ticker, force a bounded strategy workflow.
+            # This avoids relying solely on system prompt compliance.
+            if re.fullmatch(r"[A-Za-z]{1,10}", s or ""):
+                ticker = s.upper()
+                return (
+                    f"{ticker}\n\n"
+                    "TASK: Provide a Buy/Sell/Hold recommendation. "
+                    "Use these tools exactly once each. First call finance_data_fetch. "
+                    "Then, in a SINGLE subsequent message, request BOTH strategy_signal_tool and risk_assessment_tool (back-to-back) before writing the final answer. "
+                    "Do NOT call technical_analysis_tool. "
+                    "Summarize in concise markdown (<= 10 bullet lines). "
+                    "After the final answer, output a final line containing exactly: TERMINATE"
+                )
+            return raw
+
+        def _strip_termination_sentinel(text: str) -> str:
+            s = (text or "").strip()
+            lines = [ln.rstrip() for ln in s.splitlines()]
+            while lines and not lines[-1].strip():
+                lines.pop()
+            if lines and lines[-1].strip() == "TERMINATE":
+                lines.pop()
+            return "\n".join(lines).strip()
+
+        try:
+            result = executor_user.initiate_chat(
+                assistant,
+                message=_build_single_agent_message(user_request),
+                # Hard cap: prevent long/expensive single-agent runs.
+                # Allow a bounded tool chain for ticker-only queries:
+                # finance_data_fetch -> strategy_signal_tool -> risk_assessment_tool -> final answer
+                # Tool calls/responses each count as turns; allow enough for 3 tools + final.
+                # With the "request both tools in one message" rule above, this fits in 7 turns:
+                # user -> finance call -> finance result -> (signals+risk calls) -> signals result -> risk result -> final answer
+                max_turns=7,
+                summary_method="last_msg",
+            )
+
+            # A1 tracking for single-agent mode: assistant only.
+            by_agent = {assistant.name: _agent_client_usage(assistant)}
+            agg = _aggregate_usage(by_agent)
+            usage = {
+                "totals": agg.get("totals"),
+                "by_model": agg.get("by_model"),
+                "by_agent": by_agent,
+            }
+
+            # Deterministic capture: prefer the last assistant message.
+            if hasattr(result, "chat_history") and result.chat_history:
+                for msg in reversed(result.chat_history):
+                    # Some AG2 adapters set `name` without a stable `role`.
+                    is_assistant_msg = (msg.get("role") == "assistant") or (msg.get("name") == assistant.name)
+                    if is_assistant_msg:
+                        content = msg.get("content")
+                        if content is not None and str(content).strip():
+                            cleaned = _strip_termination_sentinel(str(content))
+                            if cleaned:
+                                return {"result": cleaned, "usage": usage}
+
+            # Fallback to summary (depends on AG2 result object).
+            if hasattr(result, "summary") and result.summary is not None and str(result.summary).strip():
+                return {"result": _strip_termination_sentinel(str(result.summary)), "usage": usage}
+
+            return {"result": "Single-agent run completed, but no output was captured.", "usage": usage}
+        except Exception as e:
+            return {"result": f"Error during single-agent analysis: {str(e)}", "usage": None}
+
+    

@@ -1,5 +1,6 @@
-streamlit
-openai
-python-dotenv
-yfinance
+streamlit>=1.33,<2
+openai>=1.40,<2
+python-dotenv>=1.0,<2
+yfinance>=0.2.40,<0.3
 ag2==0.10.3
+pydantic==2.12.5

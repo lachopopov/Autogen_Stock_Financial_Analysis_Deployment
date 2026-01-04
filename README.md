@@ -1,76 +1,107 @@
-# Autogen_Stock_Analysis
-# Autogen_Stock_Analysis
+# Autogen Stock Analysis (AG2)
 
-This project builds an AI/Agent application for stock analysis using Autogen (AG2). It leverages multiple specialized agents to fetch, analyze, and report on stock data, enabling automated financial insights through conversational AI. The app integrates yfinance for data retrieval and OpenAI for LLM-powered analysis.
+Streamlit app for stock analysis built on **AG2 (AutoGen) v0.10.3**.
 
-## Features
-- **Data Fetching**: Retrieve real-time stock information, including price, market cap, P/E ratio, and historical data.
-- **Technical Analysis**: Compute indicators like SMA, EMA, RSI for trend analysis.
-- **Risk Assessment**: Evaluate beta, volatility, dividend yield, and assign risk ratings.
-- **Strategy Signals**: Generate trading signals using MACD, RSI, and price data.
-- **Agent Collaboration**: Multi-agent group chat for comprehensive analysis (e.g., finance reporting, technical, and strategy agents).
-- **Interactive UI**: Built with Streamlit for user-friendly input and output.
+It uses a small toolchain (yfinance-backed) for fundamentals, technical indicators, strategy signals, and risk metrics, then produces a concise markdown report.
 
-## Architecture
-- **Agents**: Defined in `agents.py` (e.g., `finance_reporting_analyst`, `technical_analyst`, `strategy_agent`, `user` proxy).
-- **Tools**: Implemented in `tools.py` (`FinanceTools` class) for data processing.
-- **Configuration**: Centralized in `agent_config.py` (LLM, tools, code executor).
-- **Orchestration**: Managed in `agent_orchestrator.py` using AG2's GroupChat.
-- **App Entry**: `app.py` for Streamlit interface.
+## What you get
+- **Streamlit UI**: enter a ticker or a question, run analysis, download a markdown report.
+- **Two run modes**:
+  - **Multi-agent** (default): finance + technical + strategy agents with a lightweight deterministic router.
+  - **Single-agent** (optional): one assistant with tools (enabled by a sidebar toggle) that returns a bounded, tool-backed recommendation.
+- **Tool-backed metrics** (no invented data):
+  - Fundamentals: price, market cap, P/E, P/B, dividend rate, business summary (truncated)
+  - Technicals: SMA/EMA/RSI, last close
+  - Signals: MACD + MACD signal
+  - Risk: beta, volatility, dividend yield, risk rating
+- **Usage/cost visibility**: per-agent usage plus totals (shown in the UI).
+
+## Repo structure
+- `app.py`: Streamlit UI (model selector, single-agent toggle, Run button, report rendering)
+- `agents.py`: agent setup + single-agent runner
+- `agent_orchestrator.py`: multi-agent orchestration + deterministic stage routing + report consolidation
+- `tools.py`: FinanceTools tool implementations
+- `agent_config.py`: model + runtime config (temperature enforced for supported models)
 
 ## Requirements
-- Python 3.8+
-- Dependencies: See `requirements.txt` (autogen, streamlit, openai, yfinance, python-dotenv).
+- Python 3.12
+- Dependencies: see `requirements.txt` (includes `ag2==0.10.3`, `streamlit`, `openai`, `yfinance`, `python-dotenv`)
 
-## Installation
-1. Clone the repository.
-2. Create a virtual environment: `python -m venv ag2_env`.
-3. Activate it: `source ag2_env/bin/activate` (Linux/Mac) or `ag2_env\Scripts\activate` (Windows).
-4. Install dependencies: `pip install -r requirements.txt`.
-5. Set environment variables in a `.env` file or shell:
-   - `OPENAI_API_KEY`: Your OpenAI API key.
-   - `OPENAI_BASE_URL`: Optional, for custom OpenAI endpoints.
-6. Run the app: `streamlit run app.py`.
+## Install
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-## Usage
-1. Launch the app via Streamlit.
-2. Input a stock ticker (e.g., "AAPL").
-3. The agents will collaborate in a group chat to provide analysis.
-4. View results, including data summaries, technical indicators, risk assessments, and signals.
+## Configure
+The app reads env vars and also loads a local `.env` file (if present).
 
-Example Output:
-- Fetched data: Current price, market cap, etc.
-- Analysis: SMA/EMA/RSI values.
-- Risk: Beta-based rating.
-- Signals: MACD/RSI-based recommendations.
+Required:
+- `OPENAI_API_KEY`
 
-## Development Best Practices
-- Follow `aitk-get_agent_code_gen_best_practices` for agent design.
-- Use `aitk-get_tracing_code_gen_best_practices` for logging and debugging.
-- Adhere to `aitk-get_ai_model_guidance` for LLM usage.
-- For evaluation, use `aitk-evaluation_planner` and related tools.
+Optional:
+- `OPENAI_BASE_URL` (custom OpenAI-compatible endpoint)
+- `OPENAI_MODEL` (overridden by the UI model selector when you use the app)
 
-## Changelog
-### v0.10.3 to Latest AG2 Refactoring (Applied [Current Date])
-- **File: `agent_orchestrator.py`**
-  - Changed `register_function` to `register_for_llm` for tool registration (latest AG2 auto-generates schemas from function signatures).
-  - Removed `tools_list` from `AgentConfig.get_tools_list()`; now relies on function docstrings for descriptions.
-  - Simplified registration loop; directly passes callable functions.
-  - **Why**: Improves compatibility with latest AG2, reduces manual schema maintenance.
-  - **Rollback**: Revert import to `from autogen.agentchat import register_function`, restore `tools_list` usage, and use schemas from `get_tools_list()`. Ensure AG2 v0.10.3 is installed.
+## Run
+```bash
+streamlit run app.py
+```
 
-- **File: `tools.py`**
-  - Added type hints (e.g., `ticker: str, period: str = "1mo"`) and docstrings to all methods for better AG2 schema auto-generation.
-  - **Why**: Enhances tool discoverability and follows `aitk-get_agent_code_gen_best_practices`.
-  - **Rollback**: Remove type hints and docstrings; code remains functional in v0.10.3.
+In the sidebar you can:
+- select model (`gpt-5-mini` or `gpt-5-nano`)
+- enable/disable **Single-agent mode**
+- provide the API key
 
-- **General Notes**
-  - Tested with AG2 latest; if issues, rollback to v0.10.3 by changing `requirements.txt` to `autogen==0.10.3` and reverting code.
-  - Follows `stock_analyzer_plan.md` for phased refactoring.
+## Deploy to Streamlit Community Cloud
+This repo is ready to deploy on Streamlit Community Cloud.
+
+1) Push this repo to GitHub.
+2) In Streamlit Community Cloud, create a new app from the repo.
+3) Set the entrypoint to:
+  - `app.py`
+4) Set app secrets (Settings → Secrets):
+  - `OPENAI_API_KEY` (required)
+  - Optional: `OPENAI_BASE_URL`, `AG2_ROUTING_MODE`, `AG2_MANAGER_LLM`, `AG2_INCLUDE_MANAGER_USAGE`
+
+Notes:
+- `.env` is for local development; it will not be present in Streamlit Cloud.
+- Python is pinned via `runtime.txt`.
+
+## Single-agent mode behavior (cost-bounded)
+Single-agent mode is designed to be predictable and cheap.
+
+- If the input is **ticker-only** (e.g., `AAPL`), it runs a bounded strategy workflow and returns **Buy/Sell/Hold**:
+  - Calls (once each): `finance_data_fetch` → `strategy_signal_tool` → `risk_assessment_tool`
+  - Does **not** call `technical_analysis_tool` unless you explicitly ask for technicals.
+- If the input explicitly asks for technicals (RSI/SMA/EMA), it may call `technical_analysis_tool`.
+- Tool calls are capped to avoid loops and runaway token usage.
+
+## Multi-agent routing and manager controls
+The multi-agent orchestrator supports two routing styles:
+
+- `AG2_ROUTING_MODE=deterministic` (default)
+  - Stage router: fundamentals → technicals → strategy → terminate
+  - Manager LLM is disabled by default to reduce overhead
+- `AG2_ROUTING_MODE=nondeterministic`
+  - Uses the GroupChat manager’s natural speaker selection (typically higher variance)
+  - Typically results in higher token usage and cost than `deterministic`
+
+Manager toggles:
+- `AG2_MANAGER_LLM=1|0` : enable/disable manager LLM configuration
+- `AG2_INCLUDE_MANAGER_USAGE=1|0` : include manager usage object in the usage output
+
+## Output format
+The final report is markdown and includes a unified:
+- **Key Metrics** section assembled from tool payloads (valuation + indicators + MACD + risk fields)
+
+## Troubleshooting
+- If you see **insufficient_quota**: the API key/org has no remaining credits. Add billing/credits or switch providers via `OPENAI_BASE_URL`.
+- If you hit rate limits (429): try smaller prompts, switch to deterministic routing, or re-run after a short wait.
 
 ## Contributing
-- Follow the project's Copilot instructions: Reference `.copilot/README.copilot.md` for scope, use `.copilot/agents/senior_ag2.md` as pair programmer, and align with `.copilot/plans/stock_analyzer_plan.md` for workflows.
-- Ensure code adheres to AI Toolkit best practices.
-
-## License
-[Add license if applicable, e.g., MIT]
+Follow the repo Copilot guidance:
+- `.copilot/README.copilot.md`
+- `.copilot/agents/senior_ag2_pair_programmer.md`
+- `.copilot/plans/stock_analyzer_plan.md`
